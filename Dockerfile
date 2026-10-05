@@ -13,11 +13,7 @@ WORKDIR /app
 # Copy the jar file from the builder stage
 COPY --from=builder /app/target/*.jar app.jar
 
-# Set environment variable for dynamic port
-ENV SERVER_PORT=${PORT:-8080}
+# The port is resolved at runtime from $PORT (see application.properties)
+EXPOSE 8080
 
-# Expose the port
-EXPOSE $SERVER_PORT
-
-# Set the entrypoint to use the dynamic port
 ENTRYPOINT ["java", "-jar", "app.jar"]
