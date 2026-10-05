@@ -14,6 +14,11 @@ mvn test                     # birim testleri
 docker build -t bomberman-backend . && docker run -p 8080:8080 bomberman-backend
 ```
 
+## Railway'e deploy
+
+Repo `Dockerfile` ile derlenir. Railway `PORT` değişkenini çalışma anında verir, uygulama onu
+`application.properties` üzerinden okur. Frontend `wss://<railway-alan-adı>/oyun-odasi` adresine bağlanır.
+
 ## Ortam değişkenleri
 
 | Değişken          | Varsayılan                                                      | Açıklama |
