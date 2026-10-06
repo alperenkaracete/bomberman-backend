@@ -2,6 +2,7 @@ package com.bomberman.room;
 
 import org.springframework.web.socket.WebSocketSession;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,6 +20,8 @@ class Room {
     private final int maxPlayers;
     private final Map<String, Player> players = new LinkedHashMap<>(); // keyed by session id
 
+    private Instant emptySince; // null while at least one player is present
+
     Room(String code, String game, int maxPlayers) {
         this.code = code;
         this.game = game;
@@ -32,6 +35,10 @@ class Room {
     boolean isFull() { return players.size() >= maxPlayers; }
 
     boolean isEmpty() { return players.isEmpty(); }
+
+    void markEmpty(Instant now) { emptySince = now; }
+
+    Instant emptySince() { return emptySince; }
 
     boolean hasPlayerId(String playerId) {
         return players.values().stream().anyMatch(p -> p.id().equals(playerId));
@@ -55,7 +62,10 @@ class Room {
         players.putAll(rebuilt);
     }
 
-    void add(Player player) { players.put(player.session().getId(), player); }
+    void add(Player player) {
+        players.put(player.session().getId(), player);
+        emptySince = null;
+    }
 
     Player remove(WebSocketSession session) { return players.remove(session.getId()); }
 

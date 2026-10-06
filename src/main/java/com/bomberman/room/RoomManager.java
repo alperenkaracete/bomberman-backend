@@ -11,6 +11,9 @@ import org.springframework.web.socket.WebSocketSession;
 
 import java.io.IOException;
 import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +38,7 @@ public class RoomManager {
     static final int MAX_PLAYERS = 8;
     static final int DEFAULT_MAX_PLAYERS = 4;
     static final int MAX_FIELD_LENGTH = 32;
+    public static final Duration DEFAULT_EMPTY_ROOM_TTL = Duration.ofSeconds(120);
 
     private static final Logger log = LoggerFactory.getLogger(RoomManager.class);
 
@@ -42,6 +46,18 @@ public class RoomManager {
     private final SecureRandom random = new SecureRandom();
     private final Map<String, Room> rooms = new HashMap<>();           // code -> room
     private final Map<String, Room> roomBySession = new HashMap<>();   // session id -> room
+    private final Duration emptyRoomTtl;
+    private final Clock clock;
+
+    public RoomManager() {
+        this(DEFAULT_EMPTY_ROOM_TTL, Clock.systemUTC());
+    }
+
+    /** @param emptyRoomTtl how long a room with no players is kept before it is deleted */
+    public RoomManager(Duration emptyRoomTtl, Clock clock) {
+        this.emptyRoomTtl = emptyRoomTtl;
+        this.clock = clock;
+    }
 
     /** @param maxPlayers requested capacity, or null for the default */
     public void createRoom(WebSocketSession session, String playerId, String name, String game, Integer maxPlayers) {
@@ -83,6 +99,7 @@ public class RoomManager {
         List<Room.Player> all = List.of();
         WebSocketSession replaced = null;
         synchronized (this) {
+            expireIfStale(normalized);
             room = rooms.get(normalized);
             if (roomBySession.containsKey(session.getId())) {
                 error = BAD_REQUEST;
@@ -158,7 +175,7 @@ public class RoomManager {
             }
             left = room.remove(session);
             if (room.isEmpty()) {
-                rooms.remove(room.code());
+                room.markEmpty(clock.instant()); // kept for emptyRoomTtl so players can come back
             } else {
                 remaining = room.players();
             }
@@ -170,6 +187,24 @@ public class RoomManager {
         for (Room.Player p : remaining) {
             send(p.session(), msg);
         }
+    }
+
+    /** Deletes rooms that have been empty for longer than the grace period. */
+    public synchronized void sweepExpired() {
+        rooms.values().removeIf(r -> isExpired(r, clock.instant()));
+    }
+
+    // Caller must hold the lock.
+    private void expireIfStale(String code) {
+        Room room = rooms.get(code);
+        if (room != null && isExpired(room, clock.instant())) {
+            rooms.remove(code);
+        }
+    }
+
+    private boolean isExpired(Room room, Instant now) {
+        Instant since = room.emptySince();
+        return since != null && !since.plus(emptyRoomTtl).isAfter(now);
     }
 
     public synchronized boolean isInRoom(WebSocketSession session) {

@@ -7,6 +7,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -41,11 +46,24 @@ class RoomManagerTest {
         }
     }
 
+    /** Clock the tests can move forward. */
+    private static class FakeClock extends Clock {
+        private Instant now = Instant.parse("2026-01-01T00:00:00Z");
+
+        void advance(Duration d) { now = now.plus(d); }
+
+        @Override public ZoneId getZone() { return ZoneOffset.UTC; }
+        @Override public Clock withZone(ZoneId zone) { return this; }
+        @Override public Instant instant() { return now; }
+    }
+
+    private FakeClock clock;
     private RoomManager manager;
 
     @BeforeEach
     void setUp() {
-        manager = new RoomManager();
+        clock = new FakeClock();
+        manager = new RoomManager(Duration.ofSeconds(120), clock);
     }
 
     private String createRoom(Client host) throws Exception {
@@ -133,7 +151,7 @@ class RoomManagerTest {
     }
 
     @Test
-    void leavingNotifiesRemainingAndEmptyRoomIsDeleted() throws Exception {
+    void leavingNotifiesRemainingAndEmptyRoomIsDeletedAfterGracePeriod() throws Exception {
         Client host = new Client("a");
         Client guest = new Client("b");
         String code = createRoom(host);
@@ -146,6 +164,9 @@ class RoomManagerTest {
         assertTrue(manager.roomExists(code));
 
         manager.leave(host.session);
+        assertTrue(manager.roomExists(code), "kept during the grace period");
+        clock.advance(Duration.ofSeconds(120));
+        manager.sweepExpired();
         assertFalse(manager.roomExists(code));
         assertEquals(0, manager.roomCount());
 
@@ -248,5 +269,47 @@ class RoomManagerTest {
         assertEquals(2, fresh.last().get("players").size());
         assertTrue(manager.isInRoom(a.session));
         assertNotEquals(codeA, codeB);
+    }
+
+    @Test
+    void emptyRoomSurvivesGracePeriodAndRejoinKeepsCodeAndCapacity() throws Exception {
+        Client host = new Client("a");
+        manager.createRoom(host.session, "p-a", "Host", "bomberman", 2);
+        String code = host.last().get("room").asText();
+        manager.leave(host.session);
+
+        clock.advance(Duration.ofSeconds(119));
+        manager.sweepExpired();
+        assertTrue(manager.roomExists(code));
+
+        Client back = new Client("a2");
+        manager.joinRoom(back.session, code, "p-a", "Host");
+        assertEquals("room_joined", back.last().get("type").asText());
+        assertEquals(code, back.last().get("room").asText());
+        assertEquals(1, back.last().get("players").size());
+
+        // returning player cancels the deletion timer
+        clock.advance(Duration.ofSeconds(500));
+        manager.sweepExpired();
+        assertTrue(manager.roomExists(code));
+
+        Client b = new Client("b");
+        Client c = new Client("c");
+        manager.joinRoom(b.session, code, "p-b", "B");
+        manager.joinRoom(c.session, code, "p-c", "C");
+        assertEquals("ROOM_FULL", c.last().get("code").asText()); // capacity 2 unchanged
+    }
+
+    @Test
+    void emptyRoomIsDeletedWhenGracePeriodEnds() throws Exception {
+        Client host = new Client("a");
+        String code = createRoom(host);
+        manager.leave(host.session);
+
+        clock.advance(Duration.ofSeconds(120));
+        Client late = new Client("late");
+        manager.joinRoom(late.session, code, "p-a", "Host"); // lazy expiry even before a sweep
+        assertEquals("ROOM_NOT_FOUND", late.last().get("code").asText());
+        assertEquals(0, manager.roomCount());
     }
 }
