@@ -33,12 +33,18 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     private final String[] allowedOrigins;
     private final long emptyRoomTtlSeconds;
+    private final long heartbeatIntervalSeconds;
+    private final long heartbeatTimeoutSeconds;
 
     public WebSocketConfig(
             @Value("${ALLOWED_ORIGINS:https://karacete.com,http://localhost:*,http://127.0.0.1:*}") String[] allowedOrigins,
-            @Value("${EMPTY_ROOM_TTL_SECONDS:120}") long emptyRoomTtlSeconds) {
+            @Value("${EMPTY_ROOM_TTL_SECONDS:120}") long emptyRoomTtlSeconds,
+            @Value("${HEARTBEAT_INTERVAL_SECONDS:15}") long heartbeatIntervalSeconds,
+            @Value("${HEARTBEAT_TIMEOUT_SECONDS:45}") long heartbeatTimeoutSeconds) {
         this.allowedOrigins = allowedOrigins;
         this.emptyRoomTtlSeconds = emptyRoomTtlSeconds;
+        this.heartbeatIntervalSeconds = Math.max(1, heartbeatIntervalSeconds);
+        this.heartbeatTimeoutSeconds = heartbeatTimeoutSeconds;
     }
 
     @Bean
@@ -78,7 +84,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         RoomManager roomManager = roomManager();
         every(SWEEP_PERIOD_SECONDS, roomManager::sweepExpired);
-        registry.addHandler(new GameSocketHandler(roomManager), "/oyun-odasi")
+        GameSocketHandler handler = new GameSocketHandler(
+                roomManager, Duration.ofSeconds(heartbeatTimeoutSeconds), Clock.systemUTC());
+        every(heartbeatIntervalSeconds, handler::heartbeatTick);
+        registry.addHandler(handler, "/oyun-odasi")
                 .setAllowedOriginPatterns(allowedOrigins);
     }
 }
