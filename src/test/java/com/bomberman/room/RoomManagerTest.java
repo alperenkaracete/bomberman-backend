@@ -15,6 +15,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RoomManagerTest {
@@ -184,11 +185,68 @@ class RoomManagerTest {
     }
 
     @Test
-    void duplicatePlayerIdInRoomIsRejected() throws Exception {
+    void sameIdTakesOverSlotKeepingOrderWithoutDisconnect() throws Exception {
         Client host = new Client("a");
-        Client dup = new Client("b");
+        Client mid = new Client("b");
+        Client last = new Client("c");
         String code = createRoom(host);
-        manager.joinRoom(dup.session, code, "p-a", "Dup");
-        assertEquals("BAD_REQUEST", dup.last().get("code").asText());
+        manager.joinRoom(mid.session, code, "p-b", "B");
+        manager.joinRoom(last.session, code, "p-c", "C");
+        int hostBefore = host.received.size();
+        int lastBefore = last.received.size();
+
+        Client fresh = new Client("b2");
+        manager.joinRoom(fresh.session, code, "p-b", "B");
+
+        JsonNode joined = fresh.last();
+        assertEquals("room_joined", joined.get("type").asText());
+        assertEquals(3, joined.get("players").size());
+        assertEquals("p-a", joined.get("players").get(0).get("id").asText());
+        assertEquals("p-b", joined.get("players").get(1).get("id").asText());
+        assertEquals("p-c", joined.get("players").get(2).get("id").asText());
+
+        for (Client other : List.of(host, last)) {
+            int before = other == host ? hostBefore : lastBefore;
+            assertEquals(before + 1, other.received.size());
+            assertEquals("player_joined", other.last().get("type").asText());
+            assertEquals("p-b", other.last().get("id").asText());
+        }
+        verify(mid.session).close(RoomManager.REPLACED);
+        assertTrue(mid.received.stream().noneMatch(m -> m.contains("player_disconnect")));
+        assertFalse(manager.isInRoom(mid.session));
+        assertTrue(manager.isInRoom(fresh.session));
+    }
+
+    @Test
+    void oldSessionCloseDoesNotRemoveTakeoverSession() throws Exception {
+        Client host = new Client("a");
+        Client old = new Client("b");
+        String code = createRoom(host);
+        manager.joinRoom(old.session, code, "p-b", "B");
+        Client fresh = new Client("b2");
+        manager.joinRoom(fresh.session, code, "p-b", "B");
+        int hostBefore = host.received.size();
+
+        manager.leave(old.session); // what afterConnectionClosed of the old socket does
+
+        assertEquals(hostBefore, host.received.size(), "no player_disconnect expected");
+        assertTrue(manager.isInRoom(fresh.session));
+        manager.relay(host.session, "{\"type\":\"move\"}");
+        assertEquals("{\"type\":\"move\"}", fresh.last().toString());
+    }
+
+    @Test
+    void sameIdInAnotherRoomIsUntouched() throws Exception {
+        Client a = new Client("a");
+        Client b = new Client("b");
+        String codeA = createRoom(a);
+        String codeB = createRoom(b);
+        Client fresh = new Client("f");
+        manager.joinRoom(fresh.session, codeB, "p-a", "Other");
+
+        assertEquals("room_joined", fresh.last().get("type").asText());
+        assertEquals(2, fresh.last().get("players").size());
+        assertTrue(manager.isInRoom(a.session));
+        assertNotEquals(codeA, codeB);
     }
 }

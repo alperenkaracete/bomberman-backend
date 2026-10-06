@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -24,6 +25,9 @@ public class RoomManager {
     public static final String ROOM_FULL = "ROOM_FULL";
     public static final String NOT_IN_ROOM = "NOT_IN_ROOM";
     public static final String BAD_REQUEST = "BAD_REQUEST";
+
+    /** Close status sent to a session whose player id was taken over by a newer session. */
+    public static final CloseStatus REPLACED = new CloseStatus(4000, "replaced");
 
     static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I
     static final int CODE_LENGTH = 6;
@@ -77,12 +81,22 @@ public class RoomManager {
         String displayName = safeName(name);
         List<Room.Player> others = List.of();
         List<Room.Player> all = List.of();
+        WebSocketSession replaced = null;
         synchronized (this) {
             room = rooms.get(normalized);
-            if (roomBySession.containsKey(session.getId()) || (room != null && room.hasPlayerId(playerId))) {
+            if (roomBySession.containsKey(session.getId())) {
                 error = BAD_REQUEST;
             } else if (room == null) {
                 error = ROOM_NOT_FOUND;
+            } else if (room.hasPlayerId(playerId)) {
+                // Same id as an existing player: the new session takes over its slot.
+                Room.Player old = room.findById(playerId);
+                room.replace(old, new Room.Player(playerId, displayName, session));
+                roomBySession.remove(old.session().getId());
+                roomBySession.put(session.getId(), room);
+                replaced = old.session();
+                others = room.playersExcept(session);
+                all = room.players();
             } else if (room.isFull()) {
                 error = ROOM_FULL;
             } else {
@@ -103,6 +117,9 @@ public class RoomManager {
             list.addObject().put("id", p.id()).put("name", p.name());
         }
         send(session, joined.toString());
+        if (replaced != null) {
+            closeQuietly(replaced);
+        }
 
         String announce = mapper.createObjectNode()
                 .put("type", "player_joined").put("id", playerId).put("name", displayName).toString();
@@ -189,6 +206,14 @@ public class RoomManager {
             return "Player";
         }
         return name.length() > MAX_FIELD_LENGTH ? name.substring(0, MAX_FIELD_LENGTH) : name;
+    }
+
+    private void closeQuietly(WebSocketSession session) {
+        try {
+            session.close(REPLACED);
+        } catch (IOException | RuntimeException e) {
+            log.debug("Closing replaced session {} failed: {}", session.getId(), e.toString());
+        }
     }
 
     private void send(WebSocketSession session, String payload) {

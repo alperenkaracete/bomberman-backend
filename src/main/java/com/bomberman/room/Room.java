@@ -37,6 +37,24 @@ class Room {
         return players.values().stream().anyMatch(p -> p.id().equals(playerId));
     }
 
+    Player findById(String playerId) {
+        return players.values().stream().filter(p -> p.id().equals(playerId)).findFirst().orElse(null);
+    }
+
+    /** Swaps a player for a new one (new session) while keeping its position in the list. */
+    void replace(Player old, Player replacement) {
+        Map<String, Player> rebuilt = new LinkedHashMap<>();
+        for (Map.Entry<String, Player> e : players.entrySet()) {
+            if (e.getValue() == old) {
+                rebuilt.put(replacement.session().getId(), replacement);
+            } else {
+                rebuilt.put(e.getKey(), e.getValue());
+            }
+        }
+        players.clear();
+        players.putAll(rebuilt);
+    }
+
     void add(Player player) { players.put(player.session().getId(), player); }
 
     Player remove(WebSocketSession session) { return players.remove(session.getId()); }
